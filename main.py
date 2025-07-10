@@ -1,90 +1,96 @@
-import multiprocessing
-import time
-import logging
+# /agentic-ai-system/insurance_main.py
 
+import multiprocessing, time, logging, json
 from agents.planner_agent import PlannerAgent
-from agents.web_search_agent import WebSearchAgent
-from agents.summarization_agent import SummarizationAgent
+from agents.document_reader_agent import DocumentReaderAgent
+from agents.policy_check_agent import PolicyCheckAgent
+from agents.fraud_detection_agent import FraudDetectionAgent
+from agents.claim_approval_agent import ClaimApprovalAgent
 from orchestrator import Orchestrator
 from utils import setup_logging
 from redis_client import get_redis_client
+import governance
 
 def run_agent(agent_class):
-    """Target function to run an agent in a separate process."""
     setup_logging()
-    agent = agent_class()
-    agent.run()
+    agent_class().run()
 
 def run_orchestrator():
-    """Target function to run the orchestrator."""
     setup_logging()
-    orchestrator = Orchestrator()
-    # A bit of a hack: give agents time to create their streams before orchestrator listens
-    time.sleep(2)
-    orchestrator.run()
+    time.sleep(2) # Give agents time to create streams
+    Orchestrator().run()
+
+def setup_environment(redis_client):
+    """Clears old data and sets up initial state for the demo."""
+    logger = logging.getLogger("Setup")
+    logger.info("--- Setting up environment for insurance claim demo ---")
+    
+    # 1. Clear old data
+    keys_to_delete = redis_client.keys('job:*') + redis_client.keys('tasks:*') + \
+                     redis_client.keys('results:*') + redis_client.keys('errors:*') + \
+                     ["registered_agents", "gov:permissions", "policies"]
+    if keys_to_delete:
+        redis_client.delete(*keys_to_delete)
+    
+    # 2. Setup Governance Rules
+    governance.register_tool_access("document_reader", ["ocr_tool"])
+    governance.register_tool_access("policy_check", ["policy_api"])
+    governance.register_tool_access("fraud_detection", ["fraud_model"])
+    governance.register_tool_access("claim_approval", ["approval_rules_engine"])
+
+    # 3. Setup Mock Data (Customer Policy)
+    policy_data = {
+        "policyholder": "John Doe",
+        "is_active": True,
+        "post_hospital_limit": 5000.00
+    }
+    redis_client.hset("policies", "policy-12345", json.dumps(policy_data))
+    logger.info("Environment setup complete.")
 
 
 if __name__ == "__main__":
     setup_logging()
-    logger = logging.getLogger("Main")
-
-    # Clear previous run data from Redis for a clean start
+    
     redis_client = get_redis_client()
-    logger.info("Clearing old data from Redis...")
-    for key in redis_client.scan_iter("job:*"):
-        redis_client.delete(key)
-    for key in redis_client.scan_iter("tasks:*"):
-        redis_client.delete(key)
-    for key in redis_client.scan_iter("results:*"):
-        redis_client.delete(key)
-    for key in redis_client.scan_iter("errors:*"):
-        redis_client.delete(key)
-    redis_client.delete("registered_agents")
+    setup_environment(redis_client)
 
+    agents_to_run = [
+        DocumentReaderAgent, PolicyCheckAgent, FraudDetectionAgent, ClaimApprovalAgent
+    ]
 
-    # Define the agents and orchestrator to run
-    processes = {
-        "WebSearchAgent": multiprocessing.Process(target=run_agent, args=(WebSearchAgent,)),
-        "SummarizationAgent": multiprocessing.Process(target=run_agent, args=(SummarizationAgent,)),
-        "Orchestrator": multiprocessing.Process(target=run_orchestrator)
-    }
+    processes = [multiprocessing.Process(target=run_agent, args=(agent,)) for agent in agents_to_run]
+    processes.append(multiprocessing.Process(target=run_orchestrator))
 
-    # Start all processes
-    for name, p in processes.items():
-        logger.info(f"Starting process: {name}")
+    for p in processes:
         p.start()
 
-    logger.info("All services started. Waiting a moment before creating a plan...")
-    time.sleep(3) # Give processes time to initialize
+    time.sleep(3) # Let processes initialize
 
-    # --- Create and start a new job ---
+    # --- Create and start the insurance claim job ---
     planner = PlannerAgent()
-    goal = "Find the capital of France and provide a summary of the search results."
-    plan = planner.create_plan(goal=goal)
-
-    # The orchestrator will see the new job and start dispatching tasks
-    # We can simulate this by directly calling a method on a local orchestrator instance
-    # In a real distributed system, the orchestrator would discover this new job itself.
     
-    # For this example, we'll give the main orchestrator process the plan.
-    # A simple way to do this is to have the orchestrator periodically check for new jobs.
-    # We will manually kickstart the first job for this example.
+    # This is the incoming claim data
+    claim_data = {
+        "claim_id": "claim-abc-789",
+        "policy_id": "policy-12345",
+        "claimant_name": "John Doe",
+        "documents": ["bill.pdf", "receipt.pdf"]
+    }
     
-    local_orchestrator = Orchestrator()
-    local_orchestrator.start_new_job(plan)
+    goal = f"Process post-hospitalization claim {claim_data['claim_id']} for {claim_data['claimant_name']}."
+    plan = planner.create_insurance_plan(goal=goal, claim_data=claim_data)
 
-    logger.info(f"Job {plan['job_id']} kicked off. The system is now running.")
-    logger.info("Monitor the logs of the individual processes to see the workflow.")
-    logger.info("Press Ctrl+C to terminate.")
+    # Manually kickstart the job
+    Orchestrator().start_new_job(plan)
+
+    logging.info(f"Job {plan['job_id']} kicked off. System is running.")
+    logging.info("Monitor logs to see the workflow. Press Ctrl+C to terminate.")
 
     try:
-        # Keep the main process alive to monitor
-        for p in processes.values():
+        for p in processes:
             p.join()
     except KeyboardInterrupt:
-        logger.info("Termination signal received. Shutting down processes.")
-        for name, p in processes.items():
-            logger.info(f"Terminating {name}...")
+        logging.info("Shutting down processes.")
+        for p in processes:
             p.terminate()
             p.join()
-        logger.info("All processes terminated.")

@@ -1,17 +1,16 @@
+# /agentic-ai-system/agents/base_agent.py
 
 import time
 import logging
 from abc import ABC, abstractmethod
 from redis_client import get_redis_client
+import governance # Import the new governance module
 
 class BaseAgent(ABC):
-    """
-    Abstract Base Class for all agents. It provides the core functionality for
-    listening to a Redis Stream, processing messages, and handling errors.
-    """
-    def __init__(self, agent_name: str, task_stream: str):
+    def __init__(self, agent_name: str, task_stream: str, tool_name: str):
         self.agent_name = agent_name
         self.task_stream = task_stream
+        self.tool_name = tool_name # The specific tool this agent uses
         self.result_stream_prefix = "results:"
         self.error_stream_prefix = "errors:"
         self.redis_client = get_redis_client()
@@ -19,70 +18,59 @@ class BaseAgent(ABC):
         self._register_agent()
 
     def _register_agent(self):
-        """
-        Registers the agent's capabilities in a Redis Set for discovery.
-        """
         self.redis_client.sadd("registered_agents", self.agent_name)
-        self.logger.info(f"Agent {self.agent_name} registered successfully.")
+        self.logger.info(f"Agent {self.agent_name} registered.")
 
     @abstractmethod
     def _perform_task(self, task_data: dict) -> dict:
-        """
-        The core logic of the agent. This method must be implemented by
-        concrete agent classes. It performs the actual work.
-        """
         pass
 
     def run(self):
-        """
-        The main loop for the agent. It listens to its designated task stream
-        and processes messages one by one.
-        """
         self.logger.info(f"Agent {self.agent_name} starting. Listening to stream '{self.task_stream}'.")
         try:
             self.redis_client.xgroup_create(self.task_stream, self.agent_name, id='0', mkstream=True)
-        except Exception as e:
-            self.logger.info(f"Consumer group '{self.agent_name}' already exists or another error occurred: {e}")
+        except Exception:
+            self.logger.info(f"Consumer group '{self.agent_name}' already exists.")
 
         while True:
             try:
                 messages = self.redis_client.xreadgroup(
                     groupname=self.agent_name,
                     consumername=f"{self.agent_name}-consumer",
-                    streams={self.task_stream: '>'},
-                    count=1,
-                    block=1000
+                    streams={self.task_stream: '>'}, count=1, block=1000
                 )
 
-                if not messages:
-                    continue
+                if not messages: continue
 
+                self.logger.info(f"Received messages: {messages}")
                 stream, msg_list = messages[0]
                 message_id, task_data = msg_list[0]
+                task_id = task_data.get('task_id', 'unknown')
+                job_id = task_data.get('job_id', 'unknown')
 
-                self.logger.info(f"Received task {task_data.get('task_id')} ({message_id}): {task_data}")
+                self.logger.info(f"Received task {task_id} ({message_id}): {task_data}")
+
+                # --- GOVERNANCE CHECKS ---
+                if not governance.check_tool_access(self.agent_name, self.tool_name):
+                    raise PermissionError(f"Access denied for tool {self.tool_name}")
+                
+                if not governance.check_rate_limit(self.agent_name, self.tool_name, limit=100, period=3600):
+                    raise Exception("Rate limit exceeded")
+                # --- END GOVERNANCE CHECKS ---
 
                 try:
                     result = self._perform_task(task_data)
-
                     result_stream = f"{self.result_stream_prefix}{self.agent_name}"
-                    # *** FIXED: Pass the specific task_id from the plan in the result message ***
                     self.redis_client.xadd(result_stream, {
-                        'job_id': task_data['job_id'],
-                        'task_id': task_data['task_id'],
-                        'result': str(result),
+                        'job_id': job_id, 'task_id': task_id, 'result': str(result)
                     })
-                    self.logger.info(f"Task {task_data['task_id']} ({message_id}) completed successfully.")
+                    self.logger.info(f"Task {task_id} completed successfully.")
 
                 except Exception as e:
-                    self.logger.error(f"Error processing task {message_id}: {e}", exc_info=True)
+                    self.logger.error(f"Error processing task {task_id}: {e}", exc_info=True)
                     error_stream = f"{self.error_stream_prefix}{self.agent_name}"
-                    # *** FIXED: Pass the task_id in the error message as well ***
                     self.redis_client.xadd(error_stream, {
-                        'job_id': task_data['job_id'],
-                        'task_id': task_data.get('task_id', 'unknown'),
-                        'error': str(e),
-                        'original_task': str(task_data)
+                        'job_id': job_id, 'task_id': task_id, 'error': str(e), 'original_task': str(task_data)
                     })
 
                 self.redis_client.xack(self.task_stream, self.agent_name, message_id)
