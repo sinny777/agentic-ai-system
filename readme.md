@@ -67,7 +67,70 @@ redis/redis-stack:latest
 
 This architecture is built on the principles of asynchronous communication, separation of concerns, and centralized state management. Redis serves as the central nervous system for communication and state, while specialized agents handle specific tasks. A `PlannerAgent` orchestrates the overall workflow.
 
-### Architectural Diagram
+### Multi-Agent System Architecture with AI Governance
+
+<p align="center">
+  
+  <img width="800" src="./docs/multi-agent-system-diagram.pdf">
+
+</p>
+
+### Details of the architecture
+
+- Here is a detailed breakdown of the numbered steps in the diagram, which represent the primary workflow of the multi-agent system from receiving a request to delivering the final result.
+
+#### Main Workflow (1-18)
+
+**1. Initiation:** A request is triggered by a client. This could be a User via a web interface, an automated API call, or a scheduled Cron Job.
+
+**2. Job Creation:** The Orchestrator receives the request and creates a new job, logging its initial state (e.g., status: pending) in the Shared Memory (State Store) for tracking.
+
+**3. Task Dispatch:** The Orchestrator sends the high-level task to the task:dispatch channel on the Message Bus. This is the entry point for the agent system.
+
+**4. Planning:** The Planning Agent is subscribed to the task:dispatch channel. It picks up the new task.
+
+**5. Plan Generation:** The Planning Agent communicates with an LLM API to break down the high-level objective into a detailed, step-by-step plan.
+
+**6. Sub-task Distribution:** The Planning Agent publishes the individual steps of the plan as sub-tasks onto the task:general channel. This makes them available to the pool of specialist agents.
+
+**7. Task Execution:** Specialist agents, like Tool Agent A (Search) and Tool Agent B (Code), listen to the task:general channel. They pick up tasks that match their capabilities.
+
+**8. Tool Use:** The specialist agents use their designated external dependencies. For example, the Search Agent queries External Tools & APIs, and the Code Agent uses the Code Execution Sandbox.
+
+**9. Store Artifacts:** The raw output from the tools (e.g., search results, code output) is saved as an "artifact" in the Shared Memory (Artifacts store). This decouples data from the agents.
+
+**10. Publish Intermediate Results:** After completing its task, each Tool Agent publishes a message to the results:intermediate channel, indicating that a piece of the puzzle is ready.
+
+**11. Result Synthesis:** The Synthesis Agent listens to the results:intermediate channel. When results are available, it knows it's time to start assembling them.
+
+**12. Retrieve Artifacts:** The Synthesis Agent retrieves the artifacts it needs from the Shared Memory, which were stored in step 9.
+
+**13. Synthesize Final Answer:** The Synthesis Agent uses an LLM API to combine the various intermediate results into a single, coherent final answer.
+
+**14. Critique and Refinement:** The synthesized answer is sent to the Critique Agent for evaluation. The Critique Agent checks the result for quality, accuracy, and completeness.
+
+**15. Refinement Loop:** If the Critique Agent finds flaws, it can generate new tasks (e.g., "Refine this section," "Verify this fact") and send them back to the task:general channel (step 7), creating an iterative improvement loop.
+
+**16. Job Completion:** Once the result passes critique, the Synthesis Agent publishes the final, validated answer to the job:complete channel.
+
+**17.Notify Orchestrator:** The Orchestrator, listening to the job:complete channel, is notified that the job has finished successfully. It retrieves the final result.
+
+**18. Deliver Result:** The Orchestrator delivers the final result back to the original client that initiated the request in step 1.
+
+**AI Governance Layer (A-G)**
+These lettered arrows show how the governance layer oversees the entire process:
+
+**A. Policy Check:** The Orchestrator consults the Policy Engine to ensure the initial request is compliant before starting the process.
+
+**B, C, D. Auditing:** The Planning, Tool, and Synthesis agents all record their actions (plans, tool usage, results) to the Immutable Audit Log for full traceability.
+
+**E. Monitoring:** The Monitoring & Alerting system constantly observes the Audit Log for anomalies, performance issues, or security alerts.
+
+**F. Human Escalation:** For sensitive or high-stakes tasks, the Synthesis Agent can flag a result for review by sending it to the Human Review Gateway.
+
+**G. Human Feedback:** Feedback from a human reviewer can be passed to the Critique Agent to guide the refinement process (step 15), ensuring human oversight is integrated into the loop.
+
+### Further Architectural Inhancements
 
 ```
 +-------------------+      +-------------------------+      +---------------------+
