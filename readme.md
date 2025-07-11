@@ -71,7 +71,7 @@ This architecture is built on the principles of asynchronous communication, sepa
 
 <p align="center">
   
-  <img width="800" src="./docs/multi-agent-system-diagram.pdf">
+  <img width="800" src="./docs/multi-agent-system-diagram.png">
 
 </p>
 
@@ -130,7 +130,7 @@ These lettered arrows show how the governance layer oversees the entire process:
 
 **G. Human Feedback:** Feedback from a human reviewer can be passed to the Critique Agent to guide the refinement process (step 15), ensuring human oversight is integrated into the loop.
 
-### Further Architectural Inhancements
+### Further Architectural Enhancements
 
 ```
 +-------------------+      +-------------------------+      +---------------------+
